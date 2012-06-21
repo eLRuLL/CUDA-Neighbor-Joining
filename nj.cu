@@ -4,9 +4,13 @@
 #include <exception>
 
 #define MAX_THREADS 1024
+#define INF 		99999999999.0
+#define PI			3.14159265
 
 using namespace std;
 
+
+// 3 points.
 __global__ void nj_step1(float* mat, float* res,int width)		// Calculate the tree-divergence for every object.
 {
 	size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -22,6 +26,7 @@ __global__ void nj_step1(float* mat, float* res,int width)		// Calculate the tre
 	}
 }
 
+// 6 points.
 __global__ void nj_step2(float* mat_t, float* mat, float* diverg, int width, int* limits) // Calculate a new matrix (Mt) of distances.
 {
 	int bx = blockIdx.x;
@@ -29,29 +34,44 @@ __global__ void nj_step2(float* mat_t, float* mat, float* diverg, int width, int
 	int k = 0;
 	int blockfil = 0;
 	int blockcol = 0;
-	while(limits[k] && limits[k] < bx){
+	while(limits[k] != NULL && limits[k] < bx){
 		k++;
 	}
+	
 	if(k!=0)
 		blockfil = k - 1;
 	
 	if(k!=0)
-		blockcol = limits[k - 1];
+		blockcol = bx - limits[k - 1] - 1;
 	
 	int idx = threadIdx.x;
 	int idy = threadIdx.y;
 	
-	int i = (blockfil * blockDim.x) + idx;
-	int j = (blockcol * blockDim.y) + idy;
-	
-	mat_t[i*width + j] = mat[i*width + j] - (diverg[i] + diverg[j])/(width-2);
+	if( (limits[k]) == blockcol){
+		int i = (blockfil * blockDim.x) + idx;
+		int j = (blockcol * blockDim.y) + idy;
+		
+		if (i < width && j < width){
+			if(idy < idx){
+				mat_t[i*width + j] = mat[i*width + j] - (diverg[i] + diverg[j])/(width-2);
+			}else
+				mat_t[i*width + j] = PI;
+		}
+	}else{
+		int i = (blockfil * blockDim.x) + idx;
+		int j = (blockcol * blockDim.y) + idy;
+		
+		if (i < width && j < width)
+			mat_t[i*width + j] = mat[i*width + j] - (diverg[i] + diverg[j])/(width-2);
+	}
 }
 
 int main()
 {
 	int N; 											// number of elements (the same as the width of the matrix).
 	int numblocks;									// number of necessary blocks in the GPU
-	int b; 											// dimension of the block
+	int b = 8; 										// dimension of the block (blocks of 8x8 is 64 threads in the block, 
+													// which benefits CUDA 'cause is it multiple of 32 (for warp control)
 	float* M;										// matrix of distances
 	float* Mt;										// temporal matrix for finding the smallest values.
 	float* r;										// array of divergences
@@ -122,32 +142,42 @@ int main()
 			printf("%4.2f ",r[i]);
 		printf("\n");
 		
-		int numblocks = ((N/b)*((N/b)+1))/2.0;			// Number of blocks like a triangular matrix.
+		int nb = ceil((double)((double)N/(double)b));
 		
-		int* limits = new int[N/b];
-		for(int i=0; i<N/b ; i++)
+		printf("nb: %d\n",nb);
+		
+		int numblocks = (nb*(nb+1))/2.0;			// Number of blocks like a triangular matrix.
+		
+		printf("number of blocks for step2: %d\n\n",numblocks);
+		
+		int* limits = new int[nb];
+		for(int i=0; i<nb ; i++)
 			limits[i] = (int)((((i+1)*(i+2))/2.0) - 1);
 		
 		float* Mt_d;
 		cudaMalloc((void**) &Mt_d, sizeof(float)*N*N);
-		float* limits_d;
-		cudaMalloc((void**) &limits_d, sizeof(float)*N/b);
+		int* limits_d;
+		cudaMalloc((void**) &limits_d, sizeof(int)*nb);
+		cudaMemcpy(limits_d,limits,sizeof(int)*nb,cudaMemcpyHostToDevice);
 		
-		nj_step2<<<numblocks,(b,b)>>>(Mt_d,M_d,r_d,N,limits_d);	// Kernel launch for step 2.
+		nj_step2<<<numblocks,dim3(b,b)>>>(Mt_d,M_d,r_d,N,limits_d);	// Kernel launch for step 2.
 		
 		cudaMemcpy(Mt,Mt_d,sizeof(float)*N*N,cudaMemcpyDeviceToHost);	// Copying response matrix to the Host.
 		
 		// Printing temporal distance matrix (Mt).
+		
+		printf("Printing temporal distance matrix (Mt).\n");
 		for(int i=0; i<N; i++){
 			for(int j=0; j<N; j++)
 				printf("%4.2f ",Mt[i*N + j]);
 			printf("\n");
 		}
+		scanf("%s",buffer);
 		
-		// Step 3: Select objects "i" and "j" where M[i][j] is the minimum,
-		// Step 4: Create a new object U and delete "i" and "j".
-		// Step 5: Calculate distances from "i" to U and "j" to U.
-		// Step 6: Calculate the distance between U and the rest.
+		// Step 3: Select objects "i" and "j" where M[i][j] is the minimum. 1 point.
+		// Step 4: Create a new object U and delete "i" and "j". 3 points.
+		// Step 5: Calculate distances from "i" to U and "j" to U. 2 points.
+		// Step 6: Calculate the distance between U and the rest. 4 points.
 		
 		N = N - 1;
 	}
