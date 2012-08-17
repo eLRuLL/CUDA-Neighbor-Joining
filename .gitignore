@@ -9,4 +9,7 @@
 # Compiled Static libraries
 *.lai
 *.la
-*.a
+*.a1
+
+# Temporal files
+*~
